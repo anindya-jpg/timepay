@@ -7,6 +7,7 @@ use App\Models\Karyawan;
 use App\Models\Penggajian;
 use App\Models\PotonganRule;
 use App\Models\TarifLembur;
+use App\Models\Tunjangan;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
@@ -108,26 +109,43 @@ class TimepayServices
         int $jumlahIzin,
         int $jumlahSakit
     ): float {
-        $total = 0.0;
+        $total = collect($this->rincianPotongan(
+            $rules, $gajiPokok, $totalMenitTelat, $jumlahPulangCepat, $jumlahAlpha, $jumlahIzin, $jumlahSakit
+        ))->sum('nominal');
 
-        if ($rule = $rules->get('Telat')) {
-            $total += $this->hitungNominalPotongan($rule, $gajiPokok, $totalMenitTelat);
-        }
+        return round($total, 2);
+    }
 
-        if ($rule = $rules->get('Pulang Cepat')) {
-            $total += $this->hitungNominalPotongan($rule, $gajiPokok, $jumlahPulangCepat);
-        }
+    /**
+     * Sama seperti hitungPotongan(), tapi mengembalikan rincian per item
+     * (dipakai untuk slip gaji PDF), bukan cuma totalnya.
+     */
+    protected function rincianPotongan(
+        Collection $rules,
+        float $gajiPokok,
+        int $totalMenitTelat,
+        int $jumlahPulangCepat,
+        int $jumlahAlpha,
+        int $jumlahIzin,
+        int $jumlahSakit
+    ): array {
+        $rincian = [];
 
-        if ($rule = $rules->get('Alpha')) {
-            $total += $this->hitungNominalPotongan($rule, $gajiPokok, $jumlahAlpha);
-        }
+        $kejadian = [
+            'Telat' => $totalMenitTelat,
+            'Pulang Cepat' => $jumlahPulangCepat,
+            'Alpha' => $jumlahAlpha,
+            'Izin' => $jumlahIzin,
+            'Sakit' => $jumlahSakit,
+        ];
 
-        if ($rule = $rules->get('Izin')) {
-            $total += $this->hitungNominalPotongan($rule, $gajiPokok, $jumlahIzin);
-        }
-
-        if ($rule = $rules->get('Sakit')) {
-            $total += $this->hitungNominalPotongan($rule, $gajiPokok, $jumlahSakit);
+        foreach ($kejadian as $nama => $jumlahKejadian) {
+            if ($rule = $rules->get($nama)) {
+                $nominal = $this->hitungNominalPotongan($rule, $gajiPokok, $jumlahKejadian);
+                if ($nominal > 0) {
+                    $rincian[] = ['nama' => $nama, 'nominal' => $nominal];
+                }
+            }
         }
 
         // Potongan wajib seperti BPJS JHT / BPJS JP, berlaku tiap bulan (persen dari gaji pokok)
@@ -137,11 +155,14 @@ class TimepayServices
             }
 
             if (str_contains($namaPotongan, 'BPJS')) {
-                $total += $gajiPokok * ((float) $rule->nominal / 100);
+                $rincian[] = [
+                    'nama' => $namaPotongan,
+                    'nominal' => $gajiPokok * ((float) $rule->nominal / 100),
+                ];
             }
         }
 
-        return round($total, 2);
+        return $rincian;
     }
 
     protected function hitungNominalPotongan(PotonganRule $rule, float $gajiPokok, int $jumlahKejadian): float
@@ -169,5 +190,58 @@ class TimepayServices
             ->where('tahun', $tahun)
             ->where('status', 'draft')
             ->update(['status' => 'final']);
+    }
+
+    /**
+     * Data rincian untuk slip gaji PDF: rincian tunjangan, rincian potongan,
+     * dan statistik kehadiran yang tidak disimpan sebagai kolom di tabel penggajian.
+     */
+    public function getRincianSlip(Penggajian $penggajian): array
+    {
+        $karyawan = $penggajian->karyawan;
+
+        $rincianTunjangan = $karyawan->jabatan->tunjangans()
+            ->get()
+            ->map(fn (Tunjangan $t) => [
+                'nama' => $t->nama_tunjangan,
+                'nominal' => (float) $t->pivot->nominal,
+            ])
+            ->all();
+
+        $absensiBulanIni = Absensi::where('id_karyawan', $karyawan->id_karyawan)
+            ->whereMonth('tanggal', $penggajian->bulan)
+            ->whereYear('tanggal', $penggajian->tahun)
+            ->get();
+
+        $jumlahIzin = $absensiBulanIni->where('status', 'Izin')->count();
+        $jumlahSakit = $absensiBulanIni->where('status', 'Sakit')->count();
+        $jumlahPulangCepat = $absensiBulanIni->where('status', 'Pulang Cepat')->count();
+        $jumlahAlpha = $absensiBulanIni->where('status', 'Alpha')->count();
+        $totalMenitTelat = $absensiBulanIni->sum('menit_telat');
+
+        $potonganRules = PotonganRule::all()->keyBy('nama_potongan');
+
+        $rincianPotongan = $this->rincianPotongan(
+            $potonganRules,
+            (float) $penggajian->gaji_pokok,
+            $totalMenitTelat,
+            $jumlahPulangCepat,
+            $jumlahAlpha,
+            $jumlahIzin,
+            $jumlahSakit
+        );
+
+        $totalPendapatan = (float) $penggajian->gaji_pokok
+            + (float) $penggajian->total_tunjangan
+            + (float) $penggajian->total_tunjangan_lembur;
+
+        return [
+            'rincianTunjangan' => $rincianTunjangan,
+            'rincianPotongan' => $rincianPotongan,
+            'totalPendapatan' => $totalPendapatan,
+            'jumlahIzin' => $jumlahIzin,
+            'jumlahSakit' => $jumlahSakit,
+            'jumlahPulangCepat' => $jumlahPulangCepat,
+        ];
     }
 }

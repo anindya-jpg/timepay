@@ -93,14 +93,16 @@ class PenggajianController extends Controller
         return $pdf->download("rekap-gaji-{$namaBulan}-{$tahun}.pdf");
     }
 
-    public function slipPdf(Penggajian $penggajian): HttpResponse
+        public function slipPdf(Penggajian $penggajian): HttpResponse
     {
         $penggajian->load('karyawan.jabatan');
 
-        $pdf = Pdf::loadView('pdf.slip-gaji', [
+        $rincian = $this->payrollService->getRincianSlip($penggajian);
+
+        $pdf = Pdf::loadView('pdf.slip-gaji', array_merge([
             'penggajian' => $penggajian,
             'namaBulan' => $this->namaBulan[$penggajian->bulan],
-        ]);
+        ], $rincian));
 
         $namaFile = "slip-gaji-{$penggajian->karyawan->nama}-{$this->namaBulan[$penggajian->bulan]}-{$penggajian->tahun}.pdf";
 

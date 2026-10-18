@@ -70,7 +70,7 @@ const showPassword = ref(false);
                     class="mt-8 flex flex-col gap-5"
                 >
                     <div class="grid gap-2">
-                        <Label for="identifier">Username / Email Karyawan</Label>
+                        <Label for="identifier">Username Karyawan</Label>
                         <div class="relative">
                             <User class="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
                             <input
